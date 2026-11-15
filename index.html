@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#003f32">
+  <meta name="description" content="Лотти против багов — полноэкранная аркада в стиле олимпиады PROD.">
+  <title>PROD — Лотти против багов</title>
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="preload" href="assets/tiny5.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="arcade" aria-label="Лотти против багов">
+    <header class="hud">
+      <a class="brand" href="https://prodcontest.com/" target="_blank" rel="noopener noreferrer" aria-label="Сайт олимпиады PROD">
+        <img class="prod-logo" src="assets/prod-pixel.svg" alt="PROD" width="264" height="56">
+      </a>
+      <h1>Лотти <span>против багов</span></h1>
+      <div class="scores" aria-label="Результаты">
+        <div class="stat"><span>Счёт</span><strong id="scoreValue">000000</strong></div>
+        <div class="stat"><span>Фиксы</span><strong id="fixValue">0 / 0</strong></div>
+        <div class="stat lives"><span>Жизни</span><strong id="livesValue" aria-label="3 жизни">♥ ♥ ♥</strong></div>
+      </div>
+      <nav class="actions" aria-label="Управление игрой">
+        <button id="leaderboardButton" class="leaderboard-button" type="button" aria-label="Таблица лидеров" title="Таблица лидеров"><span data-pixel-icon="crown"></span></button>
+        <button id="pauseButton" type="button" disabled aria-label="Пауза" title="Пауза · пробел"><span data-pixel-icon="pause"></span></button>
+        <button id="restartButton" type="button" aria-label="Начать заново" title="Заново · R"><span data-pixel-icon="restart"></span></button>
+        <button id="fullscreenButton" type="button" aria-label="На весь экран" aria-pressed="false" title="На весь экран · F"><span data-pixel-icon="fullscreen"></span></button>
+      </nav>
+    </header>
+    <section class="stage" id="game" aria-label="Игровое поле">
+      <canvas id="gameCanvas" width="1440" height="800" tabindex="0" aria-label="Управляйте Лотти свайпами, стрелками или WASD. Пробел — пауза."></canvas>
+      <div class="game-overlay" id="gameOverlay">
+        <div class="overlay-card">
+          <div class="eyebrow"><span class="signal"></span>PROD / PIXEL ARCADE</div>
+          <img class="mascot" src="assets/lotti-pixel.svg" alt="" width="128" height="128">
+          <h2 id="overlayTitle">Лотти<br><span>против багов.</span></h2>
+          <p id="overlayText">Собери все фиксы. Обходи багов.<br>Возьми чип отладки — и меняйтесь ролями.</p>
+          <section id="resultEntry" class="result-entry" aria-label="Записать результат" hidden>
+            <form id="scoreForm">
+              <label for="playerName">Как записать героя этого релиза?</label>
+              <div class="name-row">
+                <input id="playerName" name="playerName" type="text" maxlength="32" autocomplete="nickname" placeholder="Твой ник или IT-легенда" required>
+                <button id="randomNameButton" class="random-name" type="button" aria-label="Выбрать случайное IT-имя" title="Случайное IT-имя"><span data-pixel-icon="dice"></span> <span>Рандом</span></button>
+              </div>
+              <p class="name-preview" id="namePreview" aria-live="polite">Свой ник или одно из 10 мемных имён.</p>
+              <button class="save-score" id="saveScoreButton" type="submit">В таблицу лидеров ↗</button>
+            </form>
+            <p id="saveFeedback" class="save-feedback" role="status" aria-live="polite"></p>
+          </section>
+          <button class="play-button" id="overlayButton" type="button"><span id="overlayButtonText">Начать игру</span><span data-pixel-icon="arrow"></span></button>
+          <button id="resultLeaderboardButton" class="text-button" type="button" hidden>Смотреть таблицу лидеров ↗</button>
+          <div class="overlay-keys"><span class="desktop-instruction">↑ ← ↓ → / WASD</span><span class="mobile-instruction">СВАЙПЫ ↑ ← ↓ →</span><span class="desktop-instruction">ENTER — СТАРТ</span></div>
+          <p class="gesture-instruction">Веди пальцем в нужную сторону. Можно поворачивать, не отрывая палец от экрана.</p>
+        </div>
+      </div>
+      <div class="debug-indicator" id="debugIndicator" hidden><span>Режим отладки</span><strong id="debugTime">8.0</strong></div>
+      <div class="gesture-hint" id="gestureHint" aria-hidden="true">↑ ← ↓ → &nbsp; Веди пальцем по полю</div>
+      <div class="touch-controls" aria-label="Сенсорное управление">
+        <button type="button" data-direction="up" aria-label="Вверх"><span data-pixel-icon="up"></span></button>
+        <button type="button" data-direction="left" aria-label="Влево"><span data-pixel-icon="left"></span></button>
+        <button type="button" data-direction="down" aria-label="Вниз"><span data-pixel-icon="down"></span></button>
+        <button type="button" data-direction="right" aria-label="Вправо"><span data-pixel-icon="right"></span></button>
+      </div>
+    </section>
+    <footer class="statusbar">
+      <span class="run-status"><i class="signal"></i><span id="stateValue" role="status" aria-live="polite">Готов к запуску</span></span>
+      <div class="legend"><span><i class="fix-dot"></i>Фикс +10</span><span><i class="chip-icon"></i>Отладка на 8 сек.</span></div>
+      <span class="keyboard-hint">[ WASD / СТРЕЛКИ ] <span>ДВИЖЕНИЕ</span> <b>·</b> [ ПРОБЕЛ ] <span>ПАУЗА</span></span>
+    </footer>
+  </main>
+  <dialog id="leaderboardDialog" class="leaderboard-dialog" aria-labelledby="leaderboardTitle" aria-describedby="leaderboardNote">
+    <div class="leaderboard-header">
+      <div><span class="eyebrow">LOCAL / HALL OF FAME</span><h2 id="leaderboardTitle">Легенды <span>прода.</span></h2></div>
+      <button id="closeLeaderboardButton" class="dialog-close" type="button" aria-label="Закрыть таблицу лидеров"><span data-pixel-icon="close"></span></button>
+    </div>
+    <p id="leaderboardNote" class="leaderboard-note">Рекорды этого браузера. Самые чистые релизы — наверху.</p>
+    <div class="leaderboard-scroll" tabindex="0" aria-label="Список рекордов">
+      <table class="leaderboard-table">
+        <thead><tr><th scope="col">#</th><th scope="col">Легенда</th><th scope="col">Очки</th><th scope="col">Фиксы</th><th scope="col">Дата и время</th></tr></thead>
+        <tbody id="leaderboardBody"></tbody>
+      </table>
+      <p id="leaderboardEmpty" class="leaderboard-empty">Пока ни одного релиза.<br>Пора стать первым багоборцем.</p>
+    </div>
+    <p id="storageNotice" class="storage-notice" role="status"></p>
+    <div class="leaderboard-footer"><span id="leaderboardCount">Попыток: 0</span><button id="backToGameButton" type="button" class="save-score">К игре ↗</button></div>
+  </dialog>
+  <script src="pixel-art.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
