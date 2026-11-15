@@ -17,7 +17,22 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const PALETTE = { green: '#003f32', wall: '#07533f', outline: '#6f9d80', white: '#ffffff', coral: '#ff785f' };
 const CHIP_FLASH_COLORS = { ...PIXEL_PALETTE, c: '#ffffff', W: '#ffad97' };
 const LOTTI_POWER_COLORS = { ...PIXEL_PALETTE, s: '#ff785f' };
-const ALT_BUG_COLORS = { ...PIXEL_PALETTE, h: '#ff785f', c: '#ffad97' };
+const BUG_PROFILES = Object.freeze([
+  { name: 'Блинки', color: '#ff0000', shade: '#a80000' },
+  { name: 'Пинки', color: '#ffb8ff', shade: '#ba70ba' },
+  { name: 'Инки', color: '#00ffff', shade: '#009cba' },
+  { name: 'Клайд', color: '#ffb852', shade: '#b87326' }
+]);
+const BUG_COLORS = BUG_PROFILES.map(({ color, shade }) => ({ ...PIXEL_PALETTE, c: color, h: color, d: shade }));
+const FRIGHT_COLORS = { ...PIXEL_PALETTE, s: '#2121ff', W: '#2121ff', G: '#ffb8ae' };
+const FRIGHT_FLASH_COLORS = { ...FRIGHT_COLORS, s: '#ffffff', W: '#ffffff', G: '#ff0000' };
+const EYES_COLORS = { ...PIXEL_PALETTE, G: '#2121ff' };
+const EYES_ART = ['................', '................', '................', '................', '................', '....WWW..WWW....', '...WWWWWWWWWW...', '...WWGGWWGGWW...', '....WGG..WGG....', '................', '................', '................', '................', '................', '................', '................'];
+// First-board arcade schedule. Frightened time does not consume this clock.
+const BUG_PHASES = [7000, 20000, 7000, 20000, 5000, 20000, 5000, Infinity];
+const BUG_TURN_ORDER = ['up', 'left', 'down', 'right'];
+let bugPhase = 0;
+let bugPhaseMs = 0;
 let map = [];
 let cols = 0;
 let rows = 0;
@@ -252,8 +267,11 @@ function actor(x, y, direction) { return { x, y, fromX: x, fromY: y, direction, 
 
 function resetActors() {
   player = actor(Math.floor(cols / 2) | 1, Math.floor(rows / 2) | 1, 'left');
-  const homes = [[1, 1], [cols - 2, 1], [1, rows - 2], [cols - 2, rows - 2]];
-  bugs = homes.map(([x, y], i) => ({ ...actor(x, y, x === 1 ? 'right' : 'left'), home: { x, y }, index: i, cooldown: 0 }));
+  const homes = [[cols - 2, 1], [1, 1], [cols - 2, rows - 2], [1, rows - 2]];
+  bugs = homes.map(([x, y], i) => ({ ...actor(x, y, x === 1 ? 'right' : 'left'), home: { x, y }, index: i,
+    cooldown: 0, frightened: false, reversePending: false, returning: false, returnPath: [], returnStep: 0, speed: 0 }));
+  bugPhase = 0;
+  bugPhaseMs = 0;
 }
 
 function resetGame() {
@@ -355,35 +373,146 @@ function movePlayer() {
     }
     collected++;
     score += dot.power ? 50 : 10;
-    if (dot.power) powerTimer = Math.ceil(8000 / STEP_MS);
+    if (dot.power) frightenBugs();
   }
 }
 
+function frightenBugs() {
+  powerTimer = Math.ceil(8000 / STEP_MS);
+  for (const bug of bugs) {
+    if (bug.returning) continue;
+    bug.frightened = true;
+    bug.reversePending = true;
+  }
+}
+
+function advanceBugClock() {
+  if (powerTimer > 0) {
+    powerTimer--;
+    if (powerTimer === 0) bugs.forEach(bug => { bug.frightened = false; });
+    return;
+  }
+  bugPhaseMs += STEP_MS;
+  if (bugPhaseMs >= BUG_PHASES[bugPhase]) {
+    bugPhaseMs -= BUG_PHASES[bugPhase];
+    bugPhase++;
+    for (const bug of bugs) if (!bug.returning) bug.reversePending = true;
+  }
+}
+
+function elroyStage() {
+  // The arcade used 20 and 10 of 244 dots. Scale for our generated mazes.
+  if (dots.size <= Math.max(1, Math.round(totalDots * 10 / 244))) return 2;
+  if (dots.size <= Math.max(2, Math.round(totalDots * 20 / 244))) return 1;
+  return 0;
+}
+
+function aheadOfPlayer(tiles) {
+  const dir = DIRS[player.direction];
+  // Preserve the original overflow quirk: aiming upward also aims left.
+  return { x: player.x + dir.x * tiles - (player.direction === 'up' ? tiles : 0), y: player.y + dir.y * tiles };
+}
+
+function bugTarget(bug) {
+  const corners = [{ x: cols - 1, y: -3 }, { x: 0, y: -3 }, { x: cols - 1, y: rows }, { x: 0, y: rows }];
+  if (bugPhase % 2 === 0 && !(bug.index === 0 && elroyStage() > 0)) return corners[bug.index];
+  if (bug.index === 0) return { x: player.x, y: player.y };
+  if (bug.index === 1) return aheadOfPlayer(4);
+  if (bug.index === 2) {
+    const pivot = aheadOfPlayer(2);
+    return { x: 2 * pivot.x - bugs[0].x, y: 2 * pivot.y - bugs[0].y };
+  }
+  const distanceSquared = (bug.x - player.x) ** 2 + (bug.y - player.y) ** 2;
+  return distanceSquared >= 64 ? { x: player.x, y: player.y } : corners[3];
+}
+
+function chooseBugDirection(bug) {
+  const reverse = OPPOSITE[bug.direction];
+  const exits = BUG_TURN_ORDER.filter(dir => canMove(bug, dir));
+  if (bug.reversePending) {
+    bug.reversePending = false;
+    if (exits.includes(reverse)) return reverse;
+  }
+  const forward = exits.filter(dir => dir !== reverse);
+  const options = forward.length ? forward : exits; // Generated mazes may have dead ends.
+  if (!options.length) return null;
+  if (bug.frightened) return options[Math.floor(Math.random() * options.length)];
+  const target = bugTarget(bug);
+  let best = options[0];
+  let bestDistance = Infinity;
+  for (const dir of options) {
+    const distance = (bug.x + DIRS[dir].x - target.x) ** 2 + (bug.y + DIRS[dir].y - target.y) ** 2;
+    if (distance < bestDistance) { best = dir; bestDistance = distance; }
+  }
+  return best;
+}
+
+function returnBugHome(bug) {
+  bug.returning = true;
+  bug.frightened = false;
+  bug.reversePending = false;
+  bug.speed = 0;
+  // Find a return route only when eaten. Chasing uses the arcade's cheap local rule.
+  const queue = [{ x: bug.x, y: bug.y, parent: -1 }];
+  const visited = new Set([keyFor(bug.x, bug.y)]);
+  let found = -1;
+  for (let i = 0; i < queue.length; i++) {
+    const point = queue[i];
+    if (point.x === bug.home.x && point.y === bug.home.y) { found = i; break; }
+    for (const dir of BUG_TURN_ORDER) {
+      const x = point.x + DIRS[dir].x;
+      const y = point.y + DIRS[dir].y;
+      const key = keyFor(x, y);
+      if (isWall(x, y) || visited.has(key)) continue;
+      visited.add(key);
+      queue.push({ x, y, parent: i });
+    }
+  }
+  bug.returnPath = [];
+  for (let i = found; i > 0; i = queue[i].parent) bug.returnPath.push({ x: queue[i].x, y: queue[i].y });
+  bug.returnPath.reverse();
+  bug.returnStep = 0;
+}
+
 function moveBug(bug) {
+  if (bug.returning) {
+    const point = bug.returnPath[Math.min(bug.returnStep + 1, bug.returnPath.length - 1)];
+    if (point) { bug.x = point.x; bug.y = point.y; bug.returnStep += 2; }
+    if (bug.returnStep >= bug.returnPath.length) {
+      bug.returning = false;
+      bug.x = bug.home.x;
+      bug.y = bug.home.y;
+      bug.direction = bug.x === 1 ? 'right' : 'left';
+      bug.cooldown = 1;
+    }
+    return;
+  }
   if (bug.cooldown > 0) { bug.cooldown--; return; }
-  if ((elapsed + bug.index) % (powerTimer > 0 ? 2 : 5) === 0) return;
-  let options = Object.keys(DIRS).filter(dir => canMove(bug, dir));
-  if (options.length > 1) options = options.filter(dir => dir !== OPPOSITE[bug.direction]);
-  const distance = dir => Math.abs(bug.x + DIRS[dir].x - player.x) + Math.abs(bug.y + DIRS[dir].y - player.y);
-  options.sort((a, b) => powerTimer > 0 ? distance(b) - distance(a) : distance(a) - distance(b));
-  if (!options.length) return;
-  bug.direction = (elapsed + bug.index * 3) % 8 === 0 && options.length > 1 ? options[1] : options[0];
-  bug.x += DIRS[bug.direction].x;
-  bug.y += DIRS[bug.direction].y;
+  const elroy = bug.index === 0 ? elroyStage() : 0;
+  // First-board speeds relative to Pac-Man's 80%: 75%, frightened 50%, Elroy 80/85%.
+  bug.speed += bug.frightened ? 50 / 80 : elroy === 2 ? 85 / 80 : elroy === 1 ? 1 : 75 / 80;
+  while (bug.speed >= 1) {
+    bug.speed--;
+    const dir = chooseBugDirection(bug);
+    if (!dir) return;
+    bug.direction = dir;
+    bug.x += DIRS[dir].x;
+    bug.y += DIRS[dir].y;
+    if (mode === 'running' && checkCollisions()) return;
+    if (bug.returning) return;
+  }
 }
 
 function checkCollisions() {
   if (invincible > 0) return false;
   for (const bug of bugs) {
-    if (bug.cooldown > 0) continue;
+    if (bug.cooldown > 0 || bug.returning) continue;
     const sameCell = bug.x === player.x && bug.y === player.y;
     const crossed = bug.fromX === player.x && bug.fromY === player.y && bug.x === player.fromX && bug.y === player.fromY;
     if (!sameCell && !crossed) continue;
-    if (powerTimer > 0) {
+    if (bug.frightened) {
       score += 200;
-      bug.x = bug.fromX = bug.home.x;
-      bug.y = bug.fromY = bug.home.y;
-      bug.cooldown = 18;
+      returnBugHome(bug);
     } else {
       lives--;
       powerTimer = 0;
@@ -401,12 +530,16 @@ function checkCollisions() {
 
 function tick() {
   elapsed++;
-  if (powerTimer > 0) powerTimer--;
+  advanceBugClock();
   if (invincible > 0) invincible--;
   [player, ...bugs].forEach(item => { item.fromX = item.x; item.fromY = item.y; });
   movePlayer();
   if (!checkCollisions() && mode === 'running') {
-    bugs.forEach(moveBug);
+    const activeBugs = bugs;
+    for (const bug of activeBugs) {
+      moveBug(bug);
+      if (bugs !== activeBugs || mode !== 'running') break;
+    }
     checkCollisions();
   }
   if (dots.size === 0 && mode === 'running') {
@@ -538,14 +671,16 @@ function drawLotti(alpha, time) {
 function drawBug(bug, alpha, time) {
   if (bug.cooldown > 0) return;
   const { x, y } = position(bug, alpha);
-  const vulnerable = powerTimer > 0;
+  if (bug.returning) {
+    drawSprite('eyes', EYES_ART, x, y, EYES_COLORS);
+    return;
+  }
+  const vulnerable = bug.frightened;
   const flashing = vulnerable && powerTimer < 14 && Math.floor(time / 130) % 2 === 0;
   const frameIndex = !reducedMotion && mode === 'running' ? Math.floor(time / 150 + bug.index) % 2 : 0;
-  const fear = vulnerable && !flashing;
-  const key = 'bug/' + bug.index + '/' + Number(fear) + '/' + frameIndex;
-  // Distinct markings keep the four bugs recognisable within the PROD palette.
-  const colors = bug.index % 2 === 1 ? ALT_BUG_COLORS : PIXEL_PALETTE;
-  drawSprite(key, fear ? PIXEL_ART.fear[0] : PIXEL_ART.bug[frameIndex], x, y, colors, !fear && bug.index > 1);
+  const key = 'bug/' + bug.index + '/' + Number(vulnerable) + '/' + Number(flashing) + '/' + frameIndex;
+  const colors = vulnerable ? flashing ? FRIGHT_FLASH_COLORS : FRIGHT_COLORS : BUG_COLORS[bug.index];
+  drawSprite(key, vulnerable ? PIXEL_ART.fear[0] : PIXEL_ART.bug[frameIndex], x, y, colors, !vulnerable && bug.index > 1);
 }
 
 function draw(time = 0) {
