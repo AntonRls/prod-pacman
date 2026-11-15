@@ -2,7 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const canvas = $('gameCanvas');
-const ctx = canvas.getContext('2d');
+const ctx = canvas.getContext('2d', { alpha: false });
 const stage = $('game');
 const overlay = $('gameOverlay');
 const overlayTitle = $('overlayTitle');
@@ -15,6 +15,9 @@ const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
 const STEP_MS = 155;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const PALETTE = { green: '#003f32', wall: '#07533f', outline: '#6f9d80', white: '#ffffff', coral: '#ff785f' };
+const CHIP_FLASH_COLORS = { ...PIXEL_PALETTE, c: '#ffffff', W: '#ffad97' };
+const LOTTI_POWER_COLORS = { ...PIXEL_PALETTE, s: '#ff785f' };
+const ALT_BUG_COLORS = { ...PIXEL_PALETTE, h: '#ff785f', c: '#ffad97' };
 let map = [];
 let cols = 0;
 let rows = 0;
@@ -31,9 +34,14 @@ let elapsed = 0;
 let mode = 'ready';
 let lastTime = 0;
 let accumulator = 0;
+let frameRequested = false;
+let drawRequested = false;
 let view = { width: 1, height: 1, dpr: 1, cell: 1, x: 0, y: 0 };
 const mazeLayer = document.createElement('canvas');
-const mazeCtx = mazeLayer.getContext('2d');
+const mazeCtx = mazeLayer.getContext('2d', { alpha: false });
+const spriteCache = new Map();
+let powerDots = [];
+let hudLives = -1;
 const LEADERBOARD_KEY = 'prod-lotti-leaderboard-v1';
 const MEME_NAMES = Object.freeze([
   'Сеньор Помидор.exe',
@@ -237,6 +245,7 @@ function createMaze() {
     if (dot) dot.power = true;
   }
   totalDots = dots.size;
+  powerDots = [...dots.values()].filter(dot => dot.power);
 }
 
 function actor(x, y, direction) { return { x, y, fromX: x, fromY: y, direction, nextDirection: direction }; }
@@ -276,11 +285,13 @@ function startGame() {
   if (['lost', 'won', 'ended'].includes(mode)) resetGame();
   mode = 'running';
   accumulator = 0;
+  lastTime = 0;
   overlay.classList.add('hidden');
   pauseButton.disabled = false;
   setPauseLabel(false);
   canvas.focus({ preventScroll: true });
   updateHud();
+  requestDraw();
 }
 
 function setPauseLabel(paused) {
@@ -294,6 +305,7 @@ function showOverlay(title, text, buttonText) {
   overlayText.textContent = text;
   $('overlayButtonText').textContent = buttonText;
   overlay.classList.remove('hidden');
+  requestDraw();
 }
 
 function togglePause() {
@@ -306,15 +318,19 @@ function togglePause() {
 }
 
 function updateHud() {
-  $('scoreValue').textContent = String(score).padStart(6, '0');
-  $('fixValue').textContent = collected + ' / ' + totalDots;
-  $('livesValue').innerHTML = Array.from({ length: 3 }, (_, i) => '<span class="pixel-heart' + (i < lives ? '' : ' empty') + '">' + pixelIcon('heart') + '</span>').join('');
-  $('livesValue').setAttribute('aria-label', 'Осталось жизней: ' + lives);
+  const setText = (id, value) => { if ($(id).textContent !== value) $(id).textContent = value; };
+  setText('scoreValue', String(score).padStart(6, '0'));
+  setText('fixValue', collected + ' / ' + totalDots);
+  if (hudLives !== lives) {
+    $('livesValue').innerHTML = Array.from({ length: 3 }, (_, i) => '<span class="pixel-heart' + (i < lives ? '' : ' empty') + '">' + pixelIcon('heart') + '</span>').join('');
+    $('livesValue').setAttribute('aria-label', 'Осталось жизней: ' + lives);
+    hudLives = lives;
+  }
   const states = { ready: 'Готов к запуску', running: 'Релиз в работе', paused: 'Пауза', won: 'Релиз готов!', lost: 'Нужен ещё один фикс', ended: 'Спринт окончен' };
   const status = powerTimer > 0 && mode === 'running' ? 'Отладка активна' : states[mode];
   if ($('stateValue').textContent !== status) $('stateValue').textContent = status;
   $('debugIndicator').hidden = powerTimer <= 0 || mode !== 'running';
-  $('debugTime').textContent = (powerTimer * STEP_MS / 1000).toFixed(1);
+  setText('debugTime', (powerTimer * STEP_MS / 1000).toFixed(1));
 }
 
 function setDirection(direction) {
@@ -332,6 +348,11 @@ function movePlayer() {
   const dot = dots.get(key);
   if (dot) {
     dots.delete(key);
+    // Remove this fix from the cached board once, rather than redrawing all fixes.
+    if (!dot.power) {
+      mazeCtx.fillStyle = PALETTE.green;
+      mazeCtx.fillRect(view.x + dot.x * view.cell, view.y + dot.y * view.cell, view.cell, view.cell);
+    }
     collected++;
     score += dot.power ? 50 : 10;
     if (dot.power) powerTimer = Math.ceil(8000 / STEP_MS);
@@ -406,7 +427,7 @@ function pixelRect(g, x, y, width, height, color) {
   g.fillRect(left, top, right - left, bottom - top);
 }
 
-function drawSprite(g, rows, centerX, centerY, size, colors = PIXEL_PALETTE, flip = false) {
+function paintSprite(g, rows, centerX, centerY, size, colors = PIXEL_PALETTE, flip = false) {
   const unit = size / rows.length;
   const ox = centerX - size / 2;
   const oy = centerY - size / 2;
@@ -416,6 +437,20 @@ function drawSprite(g, rows, centerX, centerY, size, colors = PIXEL_PALETTE, fli
       if (color) pixelRect(g, ox + (flip ? row.length - 1 - x : x) * unit, oy + y * unit, unit, unit, color);
     }
   });
+}
+
+function drawSprite(key, rows, centerX, centerY, colors = PIXEL_PALETTE, flip = false) {
+  let sprite = spriteCache.get(key);
+  if (!sprite) {
+    sprite = document.createElement('canvas');
+    sprite.width = sprite.height = Math.round(view.cell * view.dpr);
+    const g = sprite.getContext('2d');
+    g.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    g.imageSmoothingEnabled = false;
+    paintSprite(g, rows, view.cell / 2, view.cell / 2, view.cell, colors, flip);
+    spriteCache.set(key, sprite);
+  }
+  ctx.drawImage(sprite, Math.round(centerX - view.cell / 2), Math.round(centerY - view.cell / 2), view.cell, view.cell);
 }
 
 function rebuildMazeLayer() {
@@ -461,29 +496,32 @@ function rebuildMazeLayer() {
       }
     }
   }
+  // Fixes are static until collected, so bake them into the board.
+  for (const dot of dots.values()) {
+    if (dot.power) continue;
+    const x = ox + (dot.x + .5) * cell;
+    const y = oy + (dot.y + .5) * cell;
+    pixelRect(g, x - unit, y - unit, 2 * unit, 2 * unit, '#ffad97');
+    pixelRect(g, x - unit, y - unit, unit, unit, '#ffe7d5');
+  }
 }
 
 function drawDots(time) {
   const { cell, x: ox, y: oy } = view;
-  const unit = cell / 16;
-  for (const dot of dots.values()) {
+  const blink = !reducedMotion && Math.floor(time / 280) % 2 === 1;
+  for (const dot of powerDots) {
+    if (!dots.has(keyFor(dot.x, dot.y))) continue;
     const x = ox + (dot.x + .5) * cell;
     const y = oy + (dot.y + .5) * cell;
-    if (dot.power) {
-      const blink = !reducedMotion && Math.floor(time / 280) % 2 === 1;
-      drawSprite(ctx, PIXEL_ART.chip[0], x, y, cell, blink ? { ...PIXEL_PALETTE, c: '#ffffff', W: '#ffad97' } : PIXEL_PALETTE);
-    } else {
-      pixelRect(ctx, x - unit, y - unit, 2 * unit, 2 * unit, '#ffad97');
-      pixelRect(ctx, x - unit, y - unit, unit, unit, '#ffe7d5');
-    }
+    const key = 'chip/' + Number(blink);
+    drawSprite(key, PIXEL_ART.chip[0], x, y, blink ? CHIP_FLASH_COLORS : PIXEL_PALETTE);
   }
 }
 
 function position(item, alpha) {
-  const unit = view.cell / 16;
   const x = (item.fromX + (item.x - item.fromX) * alpha + .5) * view.cell;
   const y = (item.fromY + (item.y - item.fromY) * alpha + .5) * view.cell;
-  return { x: view.x + Math.round(x / unit) * unit, y: view.y + Math.round(y / unit) * unit };
+  return { x: view.x + x, y: view.y + y };
 }
 
 function drawLotti(alpha, time) {
@@ -491,8 +529,10 @@ function drawLotti(alpha, time) {
   const { x, y } = position(player, alpha);
   const moving = player.x !== player.fromX || player.y !== player.fromY;
   const frameIndex = !reducedMotion && mode === 'running' && moving ? Math.floor(time / 140) % 2 : 0;
-  const colors = powerTimer > 0 ? { ...PIXEL_PALETTE, s: '#ff785f' } : PIXEL_PALETTE;
-  drawSprite(ctx, PIXEL_ART.lotti[frameIndex], x, y, view.cell, colors, player.direction === 'left');
+  const flip = player.direction === 'left';
+  const key = 'lotti/' + frameIndex + '/' + Number(powerTimer > 0) + '/' + Number(flip);
+  const colors = powerTimer > 0 ? LOTTI_POWER_COLORS : PIXEL_PALETTE;
+  drawSprite(key, PIXEL_ART.lotti[frameIndex], x, y, colors, flip);
 }
 
 function drawBug(bug, alpha, time) {
@@ -501,11 +541,11 @@ function drawBug(bug, alpha, time) {
   const vulnerable = powerTimer > 0;
   const flashing = vulnerable && powerTimer < 14 && Math.floor(time / 130) % 2 === 0;
   const frameIndex = !reducedMotion && mode === 'running' ? Math.floor(time / 150 + bug.index) % 2 : 0;
-  const colors = { ...PIXEL_PALETTE };
+  const fear = vulnerable && !flashing;
+  const key = 'bug/' + bug.index + '/' + Number(fear) + '/' + frameIndex;
   // Distinct markings keep the four bugs recognisable within the PROD palette.
-  if (bug.index % 2 === 1) { colors.h = '#ff785f'; colors.c = '#ffad97'; }
-  if (vulnerable && !flashing) drawSprite(ctx, PIXEL_ART.fear[0], x, y, view.cell, colors);
-  else drawSprite(ctx, PIXEL_ART.bug[frameIndex], x, y, view.cell, colors, bug.index > 1);
+  const colors = bug.index % 2 === 1 ? ALT_BUG_COLORS : PIXEL_PALETTE;
+  drawSprite(key, fear ? PIXEL_ART.fear[0] : PIXEL_ART.bug[frameIndex], x, y, colors, !fear && bug.index > 1);
 }
 
 function draw(time = 0) {
@@ -523,25 +563,36 @@ function resizeCanvas() {
   const rect = stage.getBoundingClientRect();
   const width = Math.max(1, rect.width);
   const height = Math.max(1, rect.height);
-  const dpr = Math.min(devicePixelRatio || 1, 2);
+  // Pixel art needs one backing pixel per CSS pixel; Retina quadrupled the fill work.
+  const dpr = 1;
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
   const padding = width < 600 ? 5 : 12;
   const cell = Math.max(1, Math.floor(Math.min((width - padding * 2) / cols, (height - padding * 2) / rows)));
   view = { width, height, dpr, cell, x: Math.floor((width - cols * cell) / 2), y: Math.floor((height - rows * cell) / 2) };
+  spriteCache.clear();
   rebuildMazeLayer();
   draw();
 }
 
+function requestDraw() {
+  drawRequested = true;
+  if (frameRequested) return;
+  frameRequested = true;
+  requestAnimationFrame(frame);
+}
+
 function frame(time) {
-  const delta = Math.min(time - (lastTime || time), STEP_MS * 2);
-  lastTime = time;
+  frameRequested = false;
+  const delta = lastTime ? Math.max(0, Math.min(time - lastTime, STEP_MS * 2)) : 0;
+  lastTime = mode === 'running' ? time : 0;
   if (mode === 'running') {
     accumulator += delta;
     while (accumulator >= STEP_MS && mode === 'running') { accumulator -= STEP_MS; tick(); }
   }
-  draw(time);
-  requestAnimationFrame(frame);
+  if (mode === 'running' || drawRequested) draw(time);
+  drawRequested = false;
+  if (mode === 'running') requestDraw();
 }
 
 async function toggleFullscreen() {
@@ -636,4 +687,3 @@ new ResizeObserver(() => {
   resizeTimer = setTimeout(() => { if (mode === 'ready') resetGame(); else resizeCanvas(); }, 60);
 }).observe(stage);
 resetGame();
-requestAnimationFrame(frame);

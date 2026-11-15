@@ -35,6 +35,7 @@ GitHub Pages публикует игру из корня ветки `main`. Из
 node --check game.js
 node --check pixel-art.js
 node tests/leaderboard.cjs
+node tests/rendering.cjs
 ```
 
 Шрифт Tiny5 распространяется по SIL Open Font License 1.1; текст лицензии находится в `assets/Tiny5-LICENSE.txt`.
